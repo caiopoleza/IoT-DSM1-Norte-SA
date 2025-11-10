@@ -1,91 +1,160 @@
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
+#include "DHT.h"
 
+//  CONFIGURAÇÕES DE REDE 
+const char* SSID = "FIESC_IOT_EDU";
+const char* WIFI_PASS = "8120gv08";
+
+// BROKER MQTT (HiveMQ) 
+const char* MQTT_SERVER = "ce8f972bcadf4b7a99acd3e2f2fdf20e.s1.eu.hivemq.cloud";
+const int MQTT_PORT = 8883;
+const char* MQTT_USER = "s1_davi_rafael";
+const char* MQTT_PASS = "S1davirafael";
+
+// TÓPICOS MQTT
+const char* TOPICO_PRESENCA     = "S1/presenca";
+const char* TOPICO_TEMPERATURA  = "S1/temperatura";
+const char* TOPICO_UMIDADE      = "S1/umidade";
+const char* TOPICO_LED          = "S1/iluminacao";
+
+//  PINOS 
+#define LED_PIN 2
+#define TRIG_PIN 9
+#define ECHO_PIN 10
+#define DHT_PIN 4
+#define DHTTYPE DHT11
+
+//  OBJETOS 
 WiFiClientSecure client;
 PubSubClient mqtt(client);
+DHT dht(DHT_PIN, DHTTYPE);
 
-const String SSID = "FIESC_IOT_EDU";
-const String PASS = "8120gv08";
+//  VARIÁVEIS 
+long duracao;
+float distancia;
+bool detectou = false;
+unsigned long ultimoEnvio = 0;
 
-const String URL   = "ce8f972bcadf4b7a99acd3e2f2fdf20e.s1.eu.hivemq.cloud
-";
-const int PORT     = 8883;
-const String broker_USR   = "s1_davi_rafael";
-const String broker_PASS  = "S1davirafael";
-const String MyTopic = "Almeida";
-const String OtherTopic = "s1_davi_rafael";
-
-void setup() {
-  Serial.begin(115200);
-
-  Serial.println("Conectando ao WiFi");
-  WiFi.begin(SSID.c_str(), PASS.c_str());
+void conectarWiFi() {
+  Serial.print("Conectando ao WiFi ");
+  Serial.print(SSID);
+  WiFi.begin(SSID, WIFI_PASS);
   while (WiFi.status() != WL_CONNECTED) {
     Serial.print(".");
-    delay(200);
+    delay(500);
   }
-
-  Serial.println("\nConectado com sucesso!");
-  client.setInsecure();
-  Serial.println("Conectando ao Broker");
-
-  mqtt.setServer(URL.c_str(), PORT);
-  mqtt.setCallback(callback);
-
-  while (!mqtt.connected()) {
-    String ID = "s1_";
-    ID += String(random(0xffff), HEX);
-    mqtt.connect(ID.c_str(), USR.c_str(), broker_PASS.c_str());
-    Serial.print(".");
-    delay(200);
-  }
-
-  mqtt.subscribe(MyTopic.c_str());
-  Serial.println("\nConectado com sucesso ao broker !");
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN , LOW);
+  Serial.println(" conectado!");
 }
 
-void loop() {
-  // if (!mqtt.connected()) {
-  //   while (!mqtt.connected()) {
-  //     String ID = "s3_";
-  //     ID += String(random(0xffff), HEX);
-  //     mqtt.connect(ID.c_str(), USR.c_str(), broker_PASS.c_str());
-  //     delay(200);
-  //   }
-  //   mqtt.subscribe(MyTopic.c_str());
-  // }
+void conectarMQTT() {
+  mqtt.setServer(MQTT_SERVER, MQTT_PORT);
+  mqtt.setCallback(callback);
+  client.setInsecure();
 
+  Serial.print("Conectando ao HiveMQ...");
+  while (!mqtt.connected()) {
+    String clientId = "ESP32-S1-";
+    clientId += String(random(0xffff), HEX);
 
-  String mensagem = "";
-  if (Serial.available() > 0) {
-    mensagem += Serial.readStringUntil('\n');
-    mqtt.publish(OtherTopic.c_str(), mensagem.c_str());
+    if (mqtt.connect(clientId.c_str(), MQTT_USER, MQTT_PASS)) {
+      Serial.println(" conectado!");
+    } else {
+      Serial.print(".");
+      delay(1000);
+    }
   }
-
-  mqtt.loop();
-  delay(1000);
+  mqtt.subscribe(TOPICO_LED);
+  Serial.println("Assinado no tópico de LED.");
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
-  String mensagem = "";
+  String mensagem;
   for (int i = 0; i < length; i++) {
     mensagem += (char)payload[i];
   }
 
-  Serial.println("Recebido: ");
+  Serial.print("Mensagem recebida em ");
+  Serial.print(topic);
+  Serial.print(": ");
   Serial.println(mensagem);
 
-  if (mensagem.equalsIgnoreCase("acender")) {
-    digitalWrite(LED_BUILTIN , HIGH);
-    Serial.println("LED ACESO!");
+  if (String(topic) == TOPICO_LED) {
+    if (mensagem.equalsIgnoreCase("acender")) {
+      digitalWrite(LED_PIN, HIGH);
+      Serial.println("LED ACESO!");
+    } else if (mensagem.equalsIgnoreCase("apagar")) {
+      digitalWrite(LED_PIN, LOW);
+      Serial.println("LED APAGADO!");
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  conectarWiFi();
+  conectarMQTT();
+  dht.begin();
+}
+
+void loop() {
+  if (!mqtt.connected()) {
+    conectarMQTT();
+  }
+  mqtt.loop();
+
+  //  SENSOR ULTRASSÔNICO 
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  duracao = pulseIn(ECHO_PIN, HIGH);
+  distancia = duracao * 0.0343 / 2;
+
+  if (distancia > 0 && distancia < 10 && !detectou) {
+    detectou = true;
+    digitalWrite(LED_PIN, HIGH);
+    mqtt.publish(TOPICO_PRESENCA, "Objeto detectado!");
+    Serial.println("Objeto detectado!");
   } 
-  else if (mensagem.equalsIgnoreCase("apagar")) {
-    digitalWrite(LED_BUILTIN , LOW);
-    Serial.println("LED APAGADO!");
+  else if (distancia >= 10 && detectou) {
+    detectou = false;
+    digitalWrite(LED_PIN, LOW);
+    mqtt.publish(TOPICO_PRESENCA, "Área livre");
+    Serial.println("Área livre");
   }
-  else {
-    Serial.println("Mensagem não reconhecida.");
+
+  //  LEITURA DHT11 (a cada 10s) 
+  if (millis() - ultimoEnvio > 10000) {
+    float umidade = dht.readHumidity();
+    float temperatura = dht.readTemperature();
+
+    if (isnan(umidade) || isnan(temperatura)) {
+      Serial.println("Falha ao ler o DHT11");
+    } else {
+      char msgTemp[10];
+      char msgUmi[10];
+      dtostrf(temperatura, 4, 2, msgTemp);
+      dtostrf(umidade, 4, 2, msgUmi);
+
+      mqtt.publish(TOPICO_TEMPERATURA, msgTemp);
+      mqtt.publish(TOPICO_UMIDADE, msgUmi);
+
+      Serial.print("Temperatura: ");
+      Serial.print(msgTemp);
+      Serial.print(" °C | Umidade: ");
+      Serial.print(msgUmi);
+      Serial.println(" %");
+    }
+    ultimoEnvio = millis();
   }
+
+  delay(300);
 }
