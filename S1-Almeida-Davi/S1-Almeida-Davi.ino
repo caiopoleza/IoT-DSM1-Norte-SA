@@ -5,16 +5,21 @@
 
 // PINOS
 const byte LDR_PIN = 34;
-const byte LED_PIN = 19;    
+const byte LED_PIN = 19;
+
 #define DHTPIN 4
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
 
-// OBJETOS MQTT
+// Sensor Ultrassônico
+const byte TRIGGER_PIN = 22;
+const byte ECHO_PIN    = 23;
+
+// OBJETOS MQTT 
 WiFiClientSecure client;
 PubSubClient mqtt(client);
 
-// DADOS DO MQTT (ATUALIZADOS) 
+// DADOS DO MQTT 
 const char* MQTT_SERVER = "ce8f972bcadf4b7a99acd3e2f2fdf20e.s1.eu.hivemq.cloud";
 const int   MQTT_PORT   = 8883;
 const char* MQTT_USER   = "s1_davi_rafael";
@@ -25,11 +30,26 @@ const char* SSID      = "FIESC_IOT_EDU";
 const char* WIFI_PASS = "8120gv08";
 
 // TÓPICOS MQTT
-const char* TOPICO_UMIDADE     = "S1/UMIDADE";
-const char* TOPICO_TEMPERATURA = "S1/TEMPERATURA";
-const char* TOPICO_LED         = "S1/ILUMINACAO";
+const char* TOPICO_UMIDADE       = "S1/UMIDADE";
+const char* TOPICO_TEMPERATURA   = "S1/TEMPERATURA";
+const char* TOPICO_LED           = "S1/ILUMINACAO";   
+const char* TOPICO_DISTANCIA     = "S1/DISTANCIA";
 
-// CALLBACK: recebe mensagens do broker
+// ULTRASSÔNICO
+long lerDistancia() {
+  digitalWrite(TRIGGER_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIGGER_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIGGER_PIN, LOW);
+
+  long duracao = pulseIn(ECHO_PIN, HIGH);
+  long distancia = duracao * 349.24 / 2 / 10000;  // cm
+
+  return distancia;
+}
+
+// CALLBACK MQTT
 void callback(char* topic, byte* payload, unsigned int length) {
   String mensagem;
 
@@ -42,16 +62,20 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.print(": ");
   Serial.println(mensagem);
 
+  // SUBSCRIBE DE ILUMINAÇÃO
   if(strcmp(topic, TOPICO_LED) == 0){
     if (mensagem == "ACENDER") {
       digitalWrite(LED_PIN, HIGH);
-    } else if (mensagem == "APAGAR") {
+      Serial.println("LED ACESO via MQTT");
+    } 
+    else if (mensagem == "APAGAR") {
       digitalWrite(LED_PIN, LOW);
+      Serial.println("LED APAGADO via MQTT");
     }
   }
 }
 
-// CONECTA AO MQTT
+// CONEXÃO MQTT
 void conectaMQTT() {
   while (!mqtt.connected()) {
     Serial.print("Conectando ao HiveMQ... ");
@@ -61,7 +85,11 @@ void conectaMQTT() {
 
     if (mqtt.connect(clientId.c_str(), MQTT_USER, MQTT_PASS)) {
       Serial.println("Conectado!");
+
+      // SUBSCRIBE DO TÓPICO DE ILUMINAÇÃO
       mqtt.subscribe(TOPICO_LED);
+      Serial.println("SUBSCRITO EM: S1/ILUMINACAO");
+
     } else {
       Serial.println("Falhou. Tentando novamente...");
       delay(1000);
@@ -74,9 +102,12 @@ void setup() {
   Serial.begin(115200);
 
   pinMode(LED_PIN, OUTPUT);
+  pinMode(TRIGGER_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
   dht.begin();
 
-  // ----------- Conecta ao Wi-Fi -----------
+  // Conecta ao Wi-Fi
   Serial.print("Conectando ao Wi-Fi ");
   WiFi.begin(SSID, WIFI_PASS);
   while (WiFi.status() != WL_CONNECTED) {
@@ -91,7 +122,7 @@ void setup() {
   conectaMQTT();
 }
 
-// LOOP PRINCIPAL
+// LOOP
 void loop() {
 
   if (!mqtt.connected()) {
@@ -105,17 +136,14 @@ void loop() {
   Serial.println(leituraLDR);
 
   if (leituraLDR > 3500) {
-    Serial.println("ACENDER");
     digitalWrite(LED_PIN, HIGH);
     mqtt.publish(TOPICO_LED, "ACENDER");
   } else {
-    Serial.println("APAGAR");
     digitalWrite(LED_PIN, LOW);
     mqtt.publish(TOPICO_LED, "APAGAR");
   }
 
-  // (DHT11)
-  
+  // LER DHT11
   float umidade = dht.readHumidity();
   float temperatura = dht.readTemperature();
 
@@ -130,7 +158,14 @@ void loop() {
   mqtt.publish(TOPICO_TEMPERATURA, String(temperatura).c_str());
   mqtt.publish(TOPICO_UMIDADE, String(umidade).c_str());
 
-  Serial.println("--------------------");
+  // ULTRASSÔNICO
+  long distancia = lerDistancia();
 
-  delay(1500);
+  Serial.print("Distância: ");
+  Serial.print(distancia);
+  Serial.println(" cm");
+
+  mqtt.publish(TOPICO_DISTANCIA, String(distancia).c_str());
+
+  delay(5000);
 }
